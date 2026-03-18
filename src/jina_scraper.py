@@ -4,7 +4,6 @@ import re
 import requests
 from dotenv import load_dotenv
 from loguru import logger
-from src.date_utils import format_date
 
 load_dotenv()
 
@@ -96,3 +95,26 @@ def parse_data(raw_text):
         
     logger.info(f"Successfully parsed {len(parsed_items)} items from JSON.")
     return parsed_items
+
+
+# 格式化日期
+def format_date(date_str):
+    if not date_str or not isinstance(date_str, str):
+        return ""
+    
+    # Extact MM-DD from possible formats like "03-16(周一)" or "03-16"
+    match = re.search(r'(\d{2})-(\d{2})', date_str)
+    if not match:
+        return date_str
+        
+    month = match.group(1)
+    day = match.group(2)
+    
+    m_int = int(month)
+    # Target condition: 1-3 months are year 2026, other months are year 2025
+    if 1 <= m_int <= 3:
+        year = "2026"
+    else:
+        year = "2025"
+        
+    return f"{year}-{month}-{day}"
