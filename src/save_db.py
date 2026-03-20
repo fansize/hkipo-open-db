@@ -1,44 +1,50 @@
 import sqlite3
-import os
+from pathlib import Path
+
 from loguru import logger
 
-DB_FILE = 'db/ipo_data.db'
 
-def init_db():
+SCHEMA_SQL = '''
+CREATE TABLE IF NOT EXISTS hk_ipo_data (
+    code TEXT PRIMARY KEY, -- 代码
+    name TEXT, -- 名称
+    board TEXT, -- 上市板块
+    sub_start TEXT, -- 申购起始
+    sub_end TEXT, -- 申购截止
+    list_date TEXT, -- 上市日
+    price_range TEXT, -- 询价区间 （港元）
+    lot_amount TEXT, -- 一手资金 （港元）
+    lot_win_rate TEXT, -- 一手中签率
+    issue_price TEXT, -- 发行价 （港元）
+    issue_pe_ratio TEXT, -- 发行市盈率
+    greenshoe_public_offer TEXT, -- 缲鞋保护 /公开发售
+    comparable_companies TEXT, -- 可比公司
+    over_sub_multiple TEXT, -- 超购倍数
+    total_fund_raising TEXT, -- 募资总额 （亿港元）
+    issue_market_cap TEXT, -- 发行时市值 （亿港元）
+    livermore_dark_pool TEXT, -- 利弗莫尔暗盘涨蝠
+    futu_dark_pool TEXT, -- 富途暗盘涨幅
+    first_day_change TEXT, -- 首日涨幅
+    total_change TEXT, -- 累计涨幅
+    underwriter TEXT, -- 承销商
+    prospectus TEXT -- 招股说明书
+)
+'''
+
+
+def _ensure_parent_dir(db_path):
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def init_db(db_path):
+    _ensure_parent_dir(db_path)
+
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
-        # Create table if it doesn't exist according to the 22 required fields
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS hk_ipo_data (
-            code TEXT PRIMARY KEY, -- 代码
-            name TEXT, -- 名称
-            board TEXT, -- 上市板块
-            sub_start TEXT, -- 申购起始
-            sub_end TEXT, -- 申购截止
-            list_date TEXT, -- 上市日
-            price_range TEXT, -- 询价区间 （港元）
-            lot_amount TEXT, -- 一手资金 （港元）
-            lot_win_rate TEXT, -- 一手中签率
-            issue_price TEXT, -- 发行价 （港元）
-            issue_pe_ratio TEXT, -- 发行市盈率
-            greenshoe_public_offer TEXT, -- 缲鞋保护 /公开发售
-            comparable_companies TEXT, -- 可比公司
-            over_sub_multiple TEXT, -- 超购倍数
-            total_fund_raising TEXT, -- 募资总额 （亿港元）
-            issue_market_cap TEXT, -- 发行时市值 （亿港元）
-            livermore_dark_pool TEXT, -- 利弗莫尔暗盘涨蝠
-            futu_dark_pool TEXT, -- 富途暗盘涨幅
-            first_day_change TEXT, -- 首日涨幅
-            total_change TEXT, -- 累计涨幅
-            underwriter TEXT, -- 承销商
-            prospectus TEXT -- 招股说明书
-        )
-        ''')
-        
+        cursor.execute(SCHEMA_SQL)
         conn.commit()
-        logger.info(f"Database initialized successfully at {DB_FILE}")
+        logger.info(f"Database initialized successfully at {db_path}")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
@@ -46,15 +52,18 @@ def init_db():
         if 'conn' in locals() and conn:
             conn.close()
 
-def save_ipo_data(data_list):
+
+def save_ipo_data(data_list, db_path):
     if not data_list:
         logger.warning("No data provided to save.")
         return 0
-        
+
+    _ensure_parent_dir(db_path)
+
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
         count = 0
         for item in data_list:
             # Use UPSERT to only insert new rows or update changed fields for existing ones
@@ -112,13 +121,40 @@ def save_ipo_data(data_list):
                 item.get('prospectus', '')
             ))
             count += 1
-            
+
         conn.commit()
         logger.info(f"Successfully saved {count} records to database. Total incoming rows: {len(data_list)}")
         return count
     except Exception as e:
         logger.error(f"Failed to save data: {e}")
         raise
+    finally:
+        if 'conn' in locals() and conn:
+            conn.close()
+
+
+def validate_db(db_path, min_rows=1):
+    db_file = Path(db_path)
+    if not db_file.exists():
+        raise FileNotFoundError(f"Database file was not created: {db_path}")
+
+    if db_file.stat().st_size <= 0:
+        raise ValueError(f"Database file is empty: {db_path}")
+
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        integrity_result = cursor.execute("PRAGMA integrity_check").fetchone()
+        if not integrity_result or integrity_result[0] != "ok":
+            raise ValueError(f"Database integrity check failed: {integrity_result}")
+
+        row_count = cursor.execute("SELECT COUNT(*) FROM hk_ipo_data").fetchone()[0]
+        if row_count < min_rows:
+            raise ValueError(f"Database row count {row_count} is below expected minimum {min_rows}")
+
+        logger.info(f"Database validation passed for {db_path} with {row_count} rows.")
+        return row_count
     finally:
         if 'conn' in locals() and conn:
             conn.close()

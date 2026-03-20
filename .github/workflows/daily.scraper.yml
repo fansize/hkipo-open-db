@@ -1,0 +1,47 @@
+name: Daily HK IPO Scraper
+
+on:
+    schedule:
+        # 每天 UTC 11:17 执行，对应香港/北京时间 19:17，避开 GitHub Actions 整点高峰
+        - cron: "17 11 * * *"
+    workflow_dispatch: # 允许你在 GitHub 网页上手动点击运行测试
+
+jobs:
+    scrape-and-release:
+        runs-on: ubuntu-latest
+        concurrency:
+            group: update-db-release
+            cancel-in-progress: true
+        permissions:
+            contents: write # 必须赋予写入权限，以便创建 Release
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v5
+
+            - name: Set up Python
+              run: uv python install 3.13 # 根据你的 pyproject.toml 声明
+
+            - name: Install dependencies
+              run: uv sync --frozen
+
+            - name: Run Scraper
+              env:
+                  # 从 GitHub Secrets 中读取 JINA_KEY
+                  JINA_KEY: ${{ secrets.JINA_KEY }}
+              run: uv run main.py --daily
+
+            - name: Verify generated database
+              run: test -s "${RUNNER_TEMP}/ipo_data.db"
+
+            - name: Create or Update Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: update-db
+                  name: "Update DB"
+                  body: "Automated daily build of HK IPO database."
+                  files: ${{ runner.temp }}/ipo_data.db
+                  overwrite_files: true

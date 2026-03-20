@@ -1,6 +1,11 @@
 import os
 import json
 import re
+import time
+from datetime import date, datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import requests
 from dotenv import load_dotenv
 from loguru import logger
@@ -8,8 +13,11 @@ from loguru import logger
 load_dotenv()
 
 JINA_URL = "https://r.jina.ai/https://www.jisilu.cn/data/new_stock/hkipo/"
+REQUEST_TIMEOUT = (10, 30)
+MAX_RETRIES = 3
 
-def fetch_data():
+
+def fetch_data(debug_output_path=None):
     jina_key = os.getenv('JINA_KEY')
     headers = {
         "X-Return-Format": "markdown"
@@ -18,15 +26,27 @@ def fetch_data():
         headers["Authorization"] = f"Bearer {jina_key}"
 
     logger.info(f"Fetching data from Jina URL: {JINA_URL}")
-    response = requests.get(JINA_URL, headers=headers)
-    response.raise_for_status()
-    
-    md_path = os.path.join('db', 'jina_hkipo_output.md')
-    with open(md_path, 'w', encoding='utf-8') as f:
-        f.write(response.text)
-    logger.info(f"Intermediate markdown data saved to {md_path}")
-        
-    return response.text
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = requests.get(JINA_URL, headers=headers, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+
+            if debug_output_path:
+                debug_file = Path(debug_output_path)
+                debug_file.parent.mkdir(parents=True, exist_ok=True)
+                debug_file.write_text(response.text, encoding='utf-8')
+                logger.info(f"Intermediate markdown data saved to {debug_file}")
+
+            return response.text
+        except requests.RequestException as exc:
+            if attempt == MAX_RETRIES:
+                raise RuntimeError(f"Failed to fetch data after {MAX_RETRIES} attempts") from exc
+
+            sleep_seconds = attempt * 2
+            logger.warning(
+                f"Fetch attempt {attempt}/{MAX_RETRIES} failed: {exc}. Retrying in {sleep_seconds} seconds..."
+            )
+            time.sleep(sleep_seconds)
 
 def parse_data(raw_text):
     """
@@ -35,8 +55,7 @@ def parse_data(raw_text):
     # Look for the JSON payload in the text
     match = re.search(r'(\{.*"page":.*\})', raw_text, re.DOTALL)
     if not match:
-        logger.error("Could not find JSON payload in the response.")
-        return []
+        raise ValueError("Could not find JSON payload in the response.")
     
     json_str = match.group(1)
     
@@ -48,11 +67,7 @@ def parse_data(raw_text):
     try:
         data = json.loads(cleaned_str)
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON: {e}")
-        # Let's save the faulty string for debugging if it fails
-        with open("faulty_json.log", "w", encoding="utf-8") as f:
-            f.write(cleaned_str)
-        return []
+        raise ValueError(f"Failed to parse JSON: {e}") from e
 
     rows = data.get("rows", [])
     parsed_items = []
@@ -92,13 +107,13 @@ def parse_data(raw_text):
                 item[k] = ""
                 
         parsed_items.append(item)
-        
+
     logger.info(f"Successfully parsed {len(parsed_items)} items from JSON.")
     return parsed_items
 
 
 # 格式化日期
-def format_date(date_str):
+def format_date(date_str, today=None):
     if not date_str or not isinstance(date_str, str):
         return ""
     
@@ -109,12 +124,20 @@ def format_date(date_str):
         
     month = match.group(1)
     day = match.group(2)
-    
-    m_int = int(month)
-    # Target condition: 1-3 months are year 2026, other months are year 2025
-    if 1 <= m_int <= 3:
-        year = "2026"
-    else:
-        year = "2025"
-        
-    return f"{year}-{month}-{day}"
+
+    month_int = int(month)
+    day_int = int(day)
+    today = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+
+    candidates = []
+    for year in (today.year - 1, today.year, today.year + 1):
+        try:
+            candidates.append(date(year, month_int, day_int))
+        except ValueError:
+            continue
+
+    if not candidates:
+        return date_str
+
+    best_match = min(candidates, key=lambda candidate: abs((candidate - today).days))
+    return best_match.isoformat()
