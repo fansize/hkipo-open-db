@@ -37,11 +37,21 @@ jobs:
             - name: Verify generated database
               run: test -s "${RUNNER_TEMP}/ipo_data.db"
 
+            - name: Build release metadata
+              id: release_meta
+              run: |
+                  timestamp="$(TZ=Asia/Hong_Kong date '+%Y-%m-%d %H:%M')"
+                  {
+                      echo "release_body<<EOF"
+                      echo "Update HK IPO database at ${timestamp}"
+                      echo "EOF"
+                  } >> "$GITHUB_OUTPUT"
+
             - name: Create or Update Release
               uses: softprops/action-gh-release@v2
               with:
                   tag_name: update-db
                   name: "Update DB"
-                  body: "Automated daily build of HK IPO database."
+                  body: ${{ steps.release_meta.outputs.release_body }}
                   files: ${{ runner.temp }}/ipo_data.db
                   overwrite_files: true
